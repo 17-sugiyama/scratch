@@ -181,15 +181,19 @@ process_pipe:
       save: True
     
     - name: "noise"
-      skip_on_sim: False
-      psd: "Pxx_raw"
       fit: True
+      subscan: False
       calc:
-        fwhite: [5, 20]
-        lowf: 0.1
-        f_max: 50
-      save:
-        wrap_name: "noise_signal_fit"
+        fwhite: (5, 10)
+        lowf: 1
+        f_max: 25
+        mask: True
+        wn_est: noise
+        fixed_param: 'wn'
+        binning: True
+      save: True
+      select:
+        max_noise: 2000
 
     - name: "pca_relcal"
       skip_on_sim: True  # This would multiply the sim TODs with the wrong factor.
@@ -364,6 +368,7 @@ process_pipe:
       calc:
         fwhite: [1, 2]
         f_max: 2
+        binning: True
         merge_name: 'noise_fit_statsQ'
       save:
         wrap_name: "noise_fitQ"
@@ -375,6 +380,7 @@ process_pipe:
       calc:
         fwhite: [1, 2]
         f_max: 2
+        binning: True
         merge_name: 'noise_fit_statsU'
       save:
         wrap_name: "noise_fitU"
