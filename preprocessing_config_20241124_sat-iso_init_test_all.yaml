@@ -1,0 +1,407 @@
+context_file: "/global/cfs/projectdirs/sobs/metadata/satp1/contexts/use_this_local.yaml"
+plot_dir: './plots'
+
+subobs:
+  use: ['wafer_slot', 'wafer.bandpass']
+  label: wafer_slot
+  
+archive:
+  index: './process_archive.sqlite'
+  policy:
+    type: 'simple'
+    filename: './preprocess_archive_020.h5'
+    # filename: '/scratch/gpfs/SIMONSOBS/sat-iso/preprocessing/satp1_20250108_init/preprocess_archive_020.h5'
+
+process_pipe:
+    - name: "pointing_model"
+      skip_on_sim: True  # Pointing model might not be needed since sim "pointing" is known perfectly?
+      process: True
+
+    - name: "hwp_angle_model"
+      skip_on_sim: True  # HWP angle model is perfectly accurate for sims
+      process: True
+      calc:
+        on_sign_ambiguous: 'fail'
+      save: True
+
+    - name: "dark_dets"
+      signal: "signal"
+      calc: True
+      save: True
+      select: True
+
+    - name : "fp_flags"
+      calc:
+        merge: False
+      save: True
+      select: True
+
+    - name: "flag_turnarounds"
+      process: 
+        method: "scanspeed"
+      calc:
+        method: "scanspeed"
+      save: True
+      
+    - name: "det_bias_flags"
+      calc: 
+        rfrac_range: [0.2, 0.8]
+        #psat_range: [0.1, 10]  
+      save: True
+      select: True
+
+    - name: "detrend"
+      process:
+        method: "median"
+
+    - name: "estimate_hwpss"
+      skip_on_sim: True
+      calc:
+        hwpss_stats_name: "hwpss_stats"
+      save: True
+
+    - name: "subtract_hwpss"
+      skip_on_sim: True
+      process:
+        subtract_name: "signal"
+
+    - name: "trends"
+      calc:
+        max_trend: 2.5
+        t_piece: 10
+      save: True
+      select:
+        kind: "any"
+
+    - name: "jumps"
+      skip_on_sim: False
+      calc:
+        function: "slow_jumps"
+        jump_configs:
+          win_size: 800
+          thresh: 20.0
+      save:
+        jumps_name: "jumps_slow"
+      select:
+        max_n_jumps: 5
+
+    - name: "fix_jumps"
+      skip_on_sim: True  # updated
+      signal: "signal"
+      process:
+        jumps_aman: "jumps_slow"
+
+    - name: "glitchfill"
+      flags: "jumps_slow.jump_flag"
+      skip_on_sim: True  # updated
+      process:
+        nbuf: 10
+        use_pca: False
+        modes: 1
+        wrap: "signal"
+          
+    - name: "jumps"
+      skip_on_sim: False
+      calc:
+        function: "twopi_jumps"
+        jump_configs:
+          win_size: 30
+          nsigma: 10.0
+      save:
+        jumps_name: "jumps_2pi"
+      select:
+        max_n_jumps: 20
+
+    - name: "fix_jumps"
+      skip_on_sim: True  # This would fix stuff that shouldn't be in the sims, anyways. 
+      process:
+        jumps_aman: "jumps_2pi"
+        nbuf: 10
+        use_pca: False
+        modes: 1
+
+    - name: "glitchfill"
+      skip_on_sim: True  # This would fix stuff that shouldn't be in the sims, anyways. 
+      flags: "jumps_2pi.jump_flag"
+      process:
+        nbuf: 10
+        use_pca: False
+        modes: 1
+        wrap: "signal"
+
+    - name: "glitches"
+      glitch_name: "glitches"
+      skip_on_sim: False
+      calc:
+        t_glitch: 0.007
+        buffer: 100
+        hp_fc: 6.0
+        n_sig: 10
+      save: True
+      select:
+        max_n_glitch: 50000
+        sig_glitch: 10
+
+    - name: "glitchfill"
+      skip_on_sim: True  # This would fix stuff that shouldn't be in the sims, anyways. 
+      flags: "glitches.glitch_flags"
+      process:
+        nbuf: 10
+        use_pca: False
+        modes: 1
+        wrap: "signal"
+
+    - name: "detrend"
+      process:
+        method: "median"
+
+    - name : "ptp_flags"
+      calc:
+        signal_name: "signal"
+        kurtosis_threshold: 5
+      save: True
+      select: True
+
+    - name: "calibrate"
+      skip_on_sim: True  # This would multiply the sim TODs with the wrong factor.
+      process:
+        kind: "array"
+        cal_array: "det_cal.phase_to_pW"
+      
+    - name: "psd"
+      skip_on_sim: False
+      signal: "signal"
+      wrap: "Pxx_raw"
+      calc:
+        max_samples: 524288 #2**19
+        merge: False
+        nperseg: 65536 #2**16
+        noverlap: 0
+        full_output: True
+      save: True
+    
+    - name: "noise"
+      skip_on_sim: False
+      psd: "Pxx_raw"
+      fit: True
+      calc:
+        fwhite: [5, 20]
+        lowf: 0.1
+        f_max: 50
+      save:
+        wrap_name: "noise_signal_fit"
+
+    - name: "pca_relcal"
+      skip_on_sim: True  # This would multiply the sim TODs with the wrong factor.
+      signal: "lpf_sig"
+      calc:
+        pca:
+          xfac: 2
+          yfac: 1.5
+          calc_good_medianw: True
+        lpf:
+          type: "sine2"
+          cutoff: 1
+          trans_width: 0.1
+        trim_samps: 2000
+      save: True
+
+    - name: "calibrate"
+      skip_on_sim: True  # This would multiply the sim TODs with the wrong factor.
+      process:
+        kind: "array"
+        proc_aman_cal: True
+        cal_array: "lpf_sig_run1.relcal"
+
+    - name: "fourier_filter"
+      skip_on_sim: True  # To check. Keping this gave a huge bias in early tests.
+      process:
+        filt_function: "iir_filter"
+        filter_params:
+          invert: True
+
+    - name: "fourier_filter"
+      skip_on_sim: True  # To check. Keping this gave a huge bias in early tests.
+      process:
+        filt_function: "timeconst_filter"
+        filter_params:
+          timeconst: "det_cal.tau_eff"
+          invert: True
+
+    - name: "apodize"
+      process:
+        apodize_samps: 2000
+    
+    - name: "demodulate"
+      process:
+        trim_samps: 6000
+        demod_cfgs: {}
+
+    - name : "estimate_t2p"
+      fit_in_freq : True
+      calc:
+        T_sig_name: 'dsT'
+        Q_sig_name: 'demodQ'
+        U_sig_name: 'demodU'
+      calc_and_save: True
+      save: True
+      
+    - name : "subtract_t2p"
+            
+    - name: "azss"
+      calc:
+        signal: 'demodQ'
+        azss_stats_name: 'azss_statsQ_left'
+        bins: 50
+        method: 'fit'
+        max_mode: 5
+        flags: 'glitch_flags_left'
+        scan_flags: 'left_scan'
+        merge_stats: True
+        merge_model: False
+      save: True
+      subtract: True
+
+    - name: "azss"
+      calc:
+        signal: 'demodU'
+        azss_stats_name: 'azss_statsU_left'
+        bins: 50
+        method: 'fit'
+        max_mode: 5
+        flags: 'glitch_flags_left'
+        scan_flags: 'left_scan'
+        merge_stats: True
+        merge_model: False
+      save: True
+      subtract: True
+
+    - name: "azss"
+      calc:
+        signal: 'demodQ'
+        azss_stats_name: 'azss_statsQ_right'
+        bins: 50
+        method: 'fit'
+        max_mode: 5
+        flags: 'glitch_flags_right'
+        scan_flags: 'right_scan'
+        merge_stats: True
+        merge_model: False
+      save: True
+      subtract: True
+
+    - name: "azss"
+      calc:
+        signal: 'demodU'
+        azss_stats_name: 'azss_statsU_right'
+        bins: 50
+        method: 'fit'
+        max_mode: 5
+        flags: 'glitch_flags_right'
+        scan_flags: 'right_scan'
+        merge_stats: True
+        merge_model: False
+      save: True
+      subtract: True
+
+    - name: "subtract_azss_template"
+      process:
+        signal: 'demodQ'
+        azss: 'azss_statsQ_left'
+        scan_flags: 'left_scan'
+        subtract: True
+
+    - name: "subtract_azss_template"
+      process:
+        signal: 'demodU'
+        azss: 'azss_statsU_left'
+        scan_flags: 'left_scan'
+        subtract: True
+
+    - name: "subtract_azss_template"    
+      process:
+        signal: 'demodQ'
+        azss: 'azss_statsQ_right'
+        scan_flags: 'right_scan'
+        subtract: True
+
+    - name: "subtract_azss_template"    
+      process:
+        signal: 'demodU'
+        azss: 'azss_statsU_right'
+        scan_flags: 'right_scan'
+        subtract: True
+
+    # calculate psd
+    - name: "psd"
+      skip_on_sim: False
+      signal: "demodQ"
+      wrap: "psdQ"
+      calc:
+        max_samples: 524288 #2**19
+        merge: False
+        nperseg: 65536 #2**16
+        noverlap: 0
+        full_output: True
+      save: True
+
+    - name: "psd"
+      skip_on_sim: False
+      signal: "demodU"
+      wrap: "psdU"
+      calc:
+        max_samples: 524288 #2**19
+        merge: False
+        nperseg: 65536 #2**16
+        noverlap: 0
+        full_output: True
+      save: True
+
+    - name: "noise"
+      skip_on_sim: False
+      psd: "psdQ"
+      fit: True
+      calc:
+        fwhite: [1, 2]
+        f_max: 2
+        merge_name: 'noise_fit_statsQ'
+      save:
+        wrap_name: "noise_fitQ"
+
+    - name: "noise"
+      skip_on_sim: False
+      psd: "psdU"
+      fit: True
+      calc:
+        fwhite: [1, 2]
+        f_max: 2
+        merge_name: 'noise_fit_statsU'
+      save:
+        wrap_name: "noise_fitU"
+
+    # apply counter 1/f
+    - name: "fourier_filter"
+      skip_on_sim: False
+      signal_name: "demodQ"
+      wrap_name: "demodQ"
+      process:
+        filt_function: "counter_1_over_f"
+        noise_fit_array: "noise_fitQ"
+        filter_params:
+          each_detector: True
+
+    - name: "fourier_filter"
+      skip_on_sim: False
+      signal_name: "demodU"
+      wrap_name: "demodU"
+      process:
+        filt_function: "counter_1_over_f"
+        noise_fit_array: "noise_fitU"
+        filter_params:
+          each_detector: True
+
+    - name : 'scan_freq_cut'
+      signal_name_T: 'dsT'
+      signal_name_Q: 'demodQ'
+      signal_name_U: 'demodU'
+      process: True
